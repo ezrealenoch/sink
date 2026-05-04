@@ -1,0 +1,14 @@
+{
+  "name": "sink",
+  "owner": {
+    "name": "Enoch Wang"
+  },
+  "description": "Marketplace hosting the Sink multi-agent coordination plugin.",
+  "plugins": [
+    {
+      "name": "sink",
+      "source": ".",
+      "description": "Multi-agent coordination via append-only event logs."
+    }
+  ]
+}

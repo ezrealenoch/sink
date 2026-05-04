@@ -1,0 +1,15 @@
+{
+  "name": "sink",
+  "description": "Multi-agent coordination via append-only event logs. Lets multiple Claude Code instances on different machines coordinate on a shared project. Each Claude session uses /loop to poll for new events addressed to it.",
+  "version": "0.1.0",
+  "author": {
+    "name": "Enoch Wang",
+    "email": "enochsurge@gmail.com"
+  },
+  "contributors": [
+    { "name": "Claude (Anthropic)", "role": "co-author" }
+  ],
+  "homepage": "https://github.com/ezrealenoch/sink",
+  "license": "MIT",
+  "keywords": ["multi-agent", "coordination", "claude-code", "ssh", "distributed"]
+}
