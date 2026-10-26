@@ -172,6 +172,10 @@ sink poll --since-last --format json
 
 ### Codex terminal loop
 
+See the [complete Codex loop guide](docs/codex-loop.md) for installation,
+delivery guarantees, security boundaries, machine-local state, and
+troubleshooting.
+
 The Codex bridge stores its cursor, pending delivery envelope, and logs in
 machine-local Sink state. It writes the pending envelope before waking Codex;
 if delivery fails, the next tick retries the same delivery and does not advance
