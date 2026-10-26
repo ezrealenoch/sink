@@ -1,32 +1,35 @@
-# Install Sink as a Claude Code skill on this machine.
+# Install Sink CLI plus Claude Code and Codex skills on this machine.
 #   - pip install -e . (so the `sink` CLI is on PATH)
-#   - link skill\ into %USERPROFILE%\.claude\skills\sink so Claude Code sees it on next start
+#   - link skills\sink into each agent's skill directory
 $ErrorActionPreference = "Stop"
 
 $RepoDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $SkillSrc = Join-Path $RepoDir "skills\sink"
-$SkillsDir = Join-Path $env:USERPROFILE ".claude\skills"
-$SkillDst = Join-Path $SkillsDir "sink"
+$CodexRoot = if ($env:CODEX_HOME) { $env:CODEX_HOME } else { Join-Path $env:USERPROFILE ".codex" }
+$SkillTargets = @(
+    (Join-Path $env:USERPROFILE ".claude\skills\sink"),
+    (Join-Path $CodexRoot "skills\sink")
+)
 
 Write-Host "[sink] installing CLI (force-reinstall to refresh stale copies)..."
 python -m pip install --force-reinstall --no-deps -e $RepoDir
 if ($LASTEXITCODE -ne 0) { throw "pip install failed" }
 
-Write-Host "[sink] linking skill into $SkillDst"
-New-Item -ItemType Directory -Force -Path $SkillsDir | Out-Null
-if (Test-Path $SkillDst) {
-    Write-Host "[sink] $SkillDst already exists - removing it"
-    Remove-Item -Recurse -Force $SkillDst
-}
-
-$linked = $false
-try {
-    New-Item -ItemType SymbolicLink -Path $SkillDst -Target $SkillSrc -ErrorAction Stop | Out-Null
-    Write-Host "[sink] linked"
-    $linked = $true
-} catch {
-    Write-Host "[sink] symlink failed (need Developer Mode or admin) - copying instead"
-    Copy-Item -Recurse $SkillSrc $SkillDst
+foreach ($SkillDst in $SkillTargets) {
+    $SkillsDir = Split-Path -Parent $SkillDst
+    Write-Host "[sink] linking skill into $SkillDst"
+    New-Item -ItemType Directory -Force -Path $SkillsDir | Out-Null
+    if (Test-Path $SkillDst) {
+        Write-Host "[sink] $SkillDst already exists - removing it"
+        Remove-Item -Recurse -Force -LiteralPath $SkillDst
+    }
+    try {
+        New-Item -ItemType SymbolicLink -Path $SkillDst -Target $SkillSrc -ErrorAction Stop | Out-Null
+        Write-Host "[sink] linked"
+    } catch {
+        Write-Host "[sink] symlink failed (need Developer Mode or admin) - copying instead"
+        Copy-Item -Recurse $SkillSrc $SkillDst
+    }
 }
 
 Write-Host "[sink] verifying CLI..."
@@ -38,5 +41,5 @@ if ($LASTEXITCODE -eq 0) {
 }
 
 Write-Host ""
-Write-Host "[sink] Done. Restart Claude Code and the 'sink' skill will be available."
-Write-Host "[sink] Try: claude  -> /sink   (or just ask 'set up sink coordination')"
+Write-Host "[sink] Done. Restart Claude Code or Codex and the 'sink' skill will be available."
+Write-Host "[sink] Ask the agent to set up Sink coordination, or run: sink --help"

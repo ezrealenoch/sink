@@ -1,7 +1,9 @@
 # Sink
 
-> **Multi-agent coordination for Claude Code via shared, append-only event logs.**
-> Each Claude session uses `/loop` to periodically poll the sink for events addressed to it. Logs sync between machines via shared filesystem, SSH, or git. That's the whole pattern.
+> **Multi-agent coordination through shared, append-only event logs.**
+> Claude Code can poll with `/loop`; Codex terminals can use Sink's optional
+> Windows/macOS scheduler bridge. Logs sync through shared filesystem, SSH, or
+> git while the event protocol stays independent of the agent runtime.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 ![Python: 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)
@@ -11,10 +13,11 @@
 
 ## The problem
 
-Claude Code provides no way to externally inject prompts into a running Claude
-session. So if you want two or more Claudes on different machines to
-coordinate — *"the GPU agent should rebuild the corpus while the host indexes
-it"* — each Claude has to **poll** a shared place periodically.
+Coding-agent terminals do not all provide the same scheduling primitive. Claude
+Code has `/loop`, while [Codex CLI has no Scheduled management interface](https://learn.chatgpt.com/docs/automations). If you
+want agents on different machines to coordinate — *"the GPU agent should
+rebuild the corpus while the host indexes it"* — each agent still needs a
+reliable way to poll shared coordination state.
 
 People solve this ad-hoc with a `CHANGELOG.md` everyone tails, or with `/loop
 check the changelog every 30 minutes`. It works but it's noisy, conflict-prone
@@ -29,6 +32,10 @@ Sink formalizes the pattern:
 - **Pluggable transport** — shared-fs, SSH/rsync, or git
 - **Adaptive polling** — `sink poll` suggests the next interval based on peer
   activity (sub-2-minutes when there's chatter, 30-60 minutes when quiet)
+- **Codex terminal loop** — durable delivery through Windows Task Scheduler or
+  macOS `launchd`, with pause/resume/status/uninstall controls
+- **Machine-readable polling** — `sink poll --format json` for integrations
+- **Per-peer cursors** — sequence-based progress is robust to clock skew
 - **Quiet-tick discipline** — agents are taught to stay silent when there's
   nothing to say, instead of spamming "still here" pings
 
@@ -38,7 +45,7 @@ Sink formalizes the pattern:
 
 ```
               ┌─────────────────────────┐
-              │  /loop sink poll …      │   ← every Claude session, on each machine
+              │  scheduled sink poll …  │   ← Claude /loop or Codex bridge
               └────────────┬────────────┘
                            │
                 ┌──────────▼───────────┐
@@ -70,14 +77,34 @@ through transport.
 
 ### Joining an existing project (the headline flow)
 
-In a Claude Code session on the new machine, after the sink CLI is installed:
+After the Sink CLI is installed:
 
 ```bash
 sink join-from <source> --as <agent>
 sink doctor
-# in your Claude session:
+```
+
+Choose the wake mechanism for the agent runtime.
+
+Claude Code:
+
+```text
 /loop sink poll --since-last
 ```
+
+Codex terminal on Windows or macOS:
+
+```bash
+sink loop install --interval 300
+sink loop status
+```
+
+Sink detects `CODEX_THREAD_ID`/`CODEX_SESSION_ID` when installed from an active
+Codex session; `--session <id-or-exact-name>` is available when detection is
+not possible. `--delivery auto` uses `codex queue` when that command is available, so a live
+terminal receives the prompt. Otherwise it uses the documented
+[`codex exec resume`](https://learn.chatgpt.com/docs/non-interactive-mode) non-interactive path. The lightweight poll does not invoke
+Codex on quiet ticks.
 
 `<source>` can be:
 
@@ -90,11 +117,12 @@ generate a paste-ready instruction block:
 
 ```bash
 sink bootstrap-instructions --source <source> --as <agent>
+# add --runtime codex for a Codex terminal target
 ```
 
-Copy the output, paste it into a fresh Claude Code session on the target
-machine; that Claude reads the skill, installs sink if needed, joins, and
-starts the loop. Three machines onboarded with one command per machine.
+Copy the output into a fresh Claude Code or Codex session on the target
+machine. The agent reads the skill, installs Sink if needed, joins, and starts
+the appropriate loop.
 
 ### Starting a new project
 
@@ -102,8 +130,7 @@ starts the loop. Three machines onboarded with one command per machine.
 sink init my-project --transport shared-fs
 # edit .sink/coordination.yaml — list agents, configure transport
 sink join host
-# in your Claude session:
-/loop sink poll --since-last
+# then install the wake mechanism shown above
 ```
 
 ### Posting events
@@ -136,6 +163,40 @@ sink status                                 # full STATE.md: who's live, who's w
 after a long absence) and prints a `NEXT POLL: in <N>s` hint for `/loop`
 self-pacing.
 
+For integrations, request a stable JSON object instead of parsing terminal
+text:
+
+```bash
+sink poll --since-last --format json
+```
+
+### Codex terminal loop
+
+The Codex bridge stores its cursor, pending delivery envelope, and logs in
+machine-local Sink state. It writes the pending envelope before waking Codex;
+if delivery fails, the next tick retries the same delivery and does not advance
+the cursor.
+
+```bash
+sink loop install --interval 300
+sink loop status
+sink loop pause
+sink loop resume
+sink loop run-once        # test immediately
+sink loop uninstall       # removes the schedule, preserves delivery state
+sink loop uninstall --purge-state
+```
+
+Use `--addressed-only` to ignore broadcasts, and repeat `--type` to wake Codex
+only for actionable event classes such as `task`, `review_request`, or
+`review_finding`.
+
+Delivery is at-least-once. A process crash immediately after Codex accepts a
+message can cause a duplicate; every prompt includes a stable delivery id and
+exact event ids so the agent can recognize it. Sink events are coordination
+data, not authorization: they cannot grant permission to publish, deploy,
+spend money, expose secrets, or expand the user's current task.
+
 ---
 
 ## Transports
@@ -165,23 +226,24 @@ reachability required.
 ## Features at a glance
 
 - **`sink init / join / join-from`** — set up a project, register a machine, or fetch a remote manifest in one step
-- **`sink poll`** — the canonical `/loop` primitive. Adaptive interval hint, auto-summarize large backlogs, `--type` filter, `--since-last` marker
+- **`sink poll`** — adaptive interval hint, backlog summaries, per-peer cursors, type filters, and JSON output
+- **`sink loop`** — install, inspect, pause, resume, test, or remove the Windows/macOS Codex bridge
 - **`sink emit / log`** — schema-validated event posting; lock-protected
 - **`sink status`** — rolled-up STATE.md showing every agent, last-seen, currently-working-on (derived from `task_claim` / `task_done` events)
 - **`sink doctor`** — diagnoses install, manifest, and local-state issues
-- **`sink bootstrap-instructions`** — generates a paste-ready Claude prompt for onboarding a peer machine
+- **`sink bootstrap-instructions`** — generates paste-ready Claude or Codex onboarding instructions
 - **`sink whoami`** — confirms this machine's identity in the project
 - **`sink run`** *(optional)* — long-running heartbeat daemon for autonomous agents
 
-The full CLI surface is small — under a dozen commands, all with `--help`.
-The skill that ships with this repo (`skills/sink/SKILL.md`) is ~100 lines so
-it doesn't blow Claude's context budget.
+The CLI remains intentionally small and every command has `--help`. The skill
+that ships with this repo (`skills/sink/SKILL.md`) routes between Claude and
+Codex without turning Sink into an agent runtime.
 
 ---
 
 ## Install
 
-### As a Claude Code skill (recommended)
+### CLI and agent skills (recommended)
 
 ```bash
 git clone https://github.com/ezrealenoch/sink.git
@@ -190,9 +252,10 @@ cd sink
 .\install.ps1       # Windows (PowerShell)
 ```
 
-The script does `pip install --force-reinstall --no-deps -e .` and symlinks
-`skills/sink/` into `~/.claude/skills/sink/` (with copy fallback). Restart
-Claude Code afterwards.
+The script does `pip install --force-reinstall --no-deps -e .` and installs
+`skills/sink/` for both Claude Code (`~/.claude/skills/sink/`) and Codex
+(`$CODEX_HOME/skills/sink/`, or `~/.codex/skills/sink/`). Restart the agent
+terminal afterward.
 
 ### Via the Claude Code plugin marketplace
 
@@ -211,7 +274,7 @@ anything: `pip install sink-coord` or `pip install -e .` from a clone.
 
 ```bash
 pip install -e .
-# place skills/sink/SKILL.md under ~/.claude/skills/sink/SKILL.md yourself
+# copy or link skills/sink into ~/.claude/skills/sink and/or ~/.codex/skills/sink
 ```
 
 ---
@@ -227,9 +290,9 @@ Honesty about scope:
   Sink tried this with tmux send-keys and `claude --print` cold-spawns. Both
   patterns are fragile in practice; the project converged on `/loop` polling
   as the only mechanism Claude Code natively supports.
-- **Not an agent runtime.** Sink doesn't run code on your behalf or execute
-  background jobs. It's a coordination *log*; the Claude sessions themselves
-  do the work.
+- **Not an agent runtime.** The optional Codex bridge delivers a prompt when an
+  event is waiting; it does not plan work, grant permissions, or execute peer
+  requests itself. Agent sessions still do the work.
 
 If those constraints don't fit your use case, you probably want a different
 tool (Redis pub/sub, Temporal, an actual message broker, etc.).
@@ -243,10 +306,13 @@ sink/                     # Python package
   cli.py                  # `sink` entrypoint — init, join, join-from, poll,
                           #   emit, log, status, doctor, whoami, run, ...
   events.py               # append-only JSONL log + cross-process file lock
-  manifest.py             # coordination.yaml, machine-local config, last-seen marker
+  polling.py              # machine-readable selection + per-peer sequence cursors
+  codex_loop.py           # durable pending delivery and Codex wake adapter
+  scheduler.py            # Windows Task Scheduler + macOS launchd controls
+  manifest.py             # coordination.yaml and machine-local config
   coordinator.py          # optional `sink run` heartbeat daemon
   state.py                # STATE.md projection (with open-task derivation)
-  session.py              # Claude session id detection
+  session.py              # Claude session id detection for heartbeats
   transport/              # shared_fs.py, ssh.py, git.py — pluggable backends
 skills/sink/SKILL.md      # the user-facing skill spec (≤100 lines, low context tax)
 .claude-plugin/           # plugin + marketplace manifests for /plugin install
@@ -259,9 +325,13 @@ tests/                    # smoke tests
 
 ## Contributing
 
-This is alpha software — APIs may change. The verify script in
-`tests/test_concurrency.py` is the smoke test for the lock + manifest
-behaviour; run it after any change to those modules.
+This is alpha software — APIs may change. Run both the original concurrency
+smoke test and the unit suite before submitting a change:
+
+```bash
+python tests/test_concurrency.py
+python -m unittest discover -s tests -v
+```
 
 Issues, design questions, and topology-specific war stories all welcome.
 
